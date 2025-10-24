@@ -41,6 +41,8 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0 Safari/537.36"
 )
+SESSION = requests.Session()
+SESSION.headers.update({"User-Agent": USER_AGENT})
 
 # View Thresholds
 VIEW_THRESHOLDS: List[Tuple[str, int]] = [
@@ -457,7 +459,7 @@ class YouTubeScoutApp(ttk.Frame):
             params["pageToken"] = page_token
 
         try:
-            r = requests.get(
+            r = SESSION.get(
                 "https://www.googleapis.com/youtube/v3/search",
                 params=params,
                 timeout=REQUEST_TIMEOUT,
@@ -488,7 +490,7 @@ class YouTubeScoutApp(ttk.Frame):
         }
 
         try:
-            r = requests.get(
+            r = SESSION.get(
                 "https://www.googleapis.com/youtube/v3/videos",
                 params=params,
                 timeout=REQUEST_TIMEOUT,
@@ -533,6 +535,10 @@ class YouTubeScoutApp(ttk.Frame):
     def on_search(self) -> None:
         if not API_KEY:
             messagebox.showerror("Missing API key", "Set environment variable YT_API_KEY (or paste key into the script).")
+            return
+            
+        if not (self.var_inc_videos.get() or self.var_inc_playlists.get() or self.var_inc_channels.get()):
+            messagebox.showwarning("Nothing to search", "Please select at least one type (Videos, Playlists, or Channels).")
             return
 
         try:
@@ -672,40 +678,69 @@ class YouTubeScoutApp(ttk.Frame):
             self.master.after(0, lambda: self._apply_search_results(rows, opts, start_ts))
 
         except requests.HTTPError as e:
-            self.master.after(0, lambda: self._search_error(str(e)))
+            err = str(e)
+            self.master.after(0, lambda err=err: self._search_error(err))
         except Exception as e:
-            self.master.after(0, lambda: self._search_error(str(e)))
+            err = str(e)
+            self.master.after(0, lambda err=err: self._search_error(err))
 
     # Inserts rows into the results table and updates the status bar
     def _apply_search_results(self, rows, opts, start_ts):
+        # Insert rows
         for (title, channel_title, kind, views, likes, comments, duration, pub, url, thumb) in rows:
-            self.tree.insert("", tk.END,
-                             values=(title, channel_title, kind, views, likes, comments, duration, pub, url),
-                             tags=(thumb,))
+            self.tree.insert(
+                "", tk.END,
+                values=(title, channel_title, kind, views, likes, comments, duration, pub, url),
+                tags=(thumb,)
+            )
 
-        # Sort results descending by view count immediately after insertion
-        self._sort_by('views', True)
-        
-        # Compute how long the search took
+        # Sort by views (desc) if we have any rows
+        if rows:
+            self._sort_by('views', True)
+
+        # Compute elapsed
         elapsed = time.time() - start_ts
-        
-        # Update status bar text with summary of applied filters and timing
-        self.status.configure(text=(
-            f"Query='{opts.query}' | Min views={opts.min_views_label} | Duration={opts.duration_label} | "
-            f"After={opts.published_after or '—'} | Before={opts.published_before or '—'} | "
-            f"Rows={len(rows)} | Elapsed: {elapsed:.2f}s"
-        ))
-        
-        # Stop the spinner and re-enable control
+
+        # Status message: special text for empty vs normal summary
+        if not rows:
+            status_text = "No results matched your filters. Try lowering min views or changing duration/date."
+        else:
+            status_text = (
+                f"Query='{opts.query}' | Min views={opts.min_views_label} | Duration={opts.duration_label} | "
+                f"After={opts.published_after or '—'} | Before={opts.published_before or '—'} | "
+                f"Pages={opts.max_pages_per_type} | Rows={len(rows)} | Elapsed: {elapsed:.2f}s"
+            )
+        self.status.configure(text=status_text)
+
+        # Stop spinner + re-enable controls
         self.progress.stop()
         self._set_controls_enabled(True)
 
     # Handles all search errors
     def _search_error(self, msg: str):
+        # Try to map common API limit reasons to friendlier text
+        friendly = None
+        low = (msg or "").lower()
+        if "quotaexceeded" in low or "dailylimitexceeded" in low:
+            friendly = (
+                "YouTube Data API daily quota has been exhausted. "
+                "Wait for the daily reset or reduce pages/types, and ensure you’re using your own API key."
+            )
+        elif "ratelimitexceeded" in low or "userRateLimitExceeded".lower() in low:
+            friendly = (
+                "You’re sending requests too quickly for the current quota. "
+                "Lower the Pages setting, disable Playlists/Channels, or try again shortly."
+            )
+        elif "forbidden" in low and "quota" in low:
+            friendly = (
+                "Access forbidden due to quota restrictions. Verify your API key is enabled for YouTube Data API v3 "
+                "and that the project has available quota."
+            )
+
         self.progress.stop()
         self._set_controls_enabled(True)
         self.status.configure(text="Search failed")
-        messagebox.showerror("Error", msg)
+        messagebox.showerror("Error", friendly or msg)
 
     # Utility to enable/disable main search controls while a background job runs
     def _set_controls_enabled(self, enabled: bool):
@@ -748,17 +783,16 @@ class YouTubeScoutApp(ttk.Frame):
     # Downloads and displays thumbnail image in the preview panel
     def _load_thumbnail(self, url: str | None):
         try:
-            # Skip if invalid or missing URL
             if not url or not url.startswith("http"):
                 self.thumb_label.configure(image='', text="No thumbnail"); return
-                
-            # Fetch and decode image using urllib → Pillow
-            with urllib.request.urlopen(url, timeout=5) as resp:
+
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 data = resp.read()
-                im = Image.open(io.BytesIO(data))
-                im.thumbnail((360, 220))
-                self._thumb_img = ImageTk.PhotoImage(im)
-                self.thumb_label.configure(image=self._thumb_img, text='')
+            im = Image.open(io.BytesIO(data))
+            im.thumbnail((360, 220))
+            self._thumb_img = ImageTk.PhotoImage(im)
+            self.thumb_label.configure(image=self._thumb_img, text='')
         except Exception:
             self.thumb_label.configure(image='', text="No thumbnail")
 
