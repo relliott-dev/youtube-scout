@@ -1,59 +1,57 @@
-# Login System
+# YouTube Scout
 
 ## Overview
 
-This repository contains a PHP-based login system designed to provide secure authentication and user management functionality for web applications. It supports user registration, login, session management, account activation, password recovery, and admin functionalities.
+This repository contains a Python-based desktop application that allows you to search and analyze YouTube videos, playlists, and channels through the YouTube Data API v3. It provides a clean graphical interface built with Tkinter, supporting filters for views, duration, and publication dates — along with thumbnail previews, sortable columns, CSV export, and keyboard shortcuts.
 
 ## Features
 
-- Allows new users to register by providing their username, email, and password
-- Authenticates users based on their credentials and initiates a session
-- Terminates the user's session and redirects to the login page
-- Manages user sessions to ensure secure access to restricted areas
-- Sends account activation emails and password reset links
-- Allows users to reset their password through a secure process
-- Enables users to update their email and other account information
-- Provides administrative controls for managing user accounts
-- Visualizes user login data and other relevant statistics using JavaScript charts
-- Enhances the system with asynchronous data loading and session timeouts for improved user experience
+- Search YouTube for videos, playlists, and channels
+- Filter results by minimum view count, duration, and publish date range
+- Sort results instantly by any column (views, likes, date, etc.)
+- View thumbnails and metadata in a built-in preview panel
+- Export search results to CSV for offline analysis
+- Open or copy video URLs directly from the app
+- Keyboard shortcuts for quick navigation and actions
+- Optional thumbnail display using Pillow
+
+## Planned Features
+
+
 
 ## Requirements
 
-- PHP (version 7.4 or higher recommended)
-- MySQL or MariaDB
-- PHPMailer
+- Python 3.10 or higher
+- YouTube Data API v3 key
+- Required packages listed in `requirements.txt`
 
 ## Installation
 
-1. Clone the repository or download the source code
+1. Clone or download the repository.
 
-2. Ensure that PHP and MySQL/MariaDB are installed on your server. Here are guides to install [PHP](https://www.php.net/manual/en/install.php) and [MySQL](https://dev.mysql.com/doc/refman/8.0/en/installing.html)
+2. Ensure that Python 3.10+ is installed on your system. You can download it from the [official Python website](https://www.python.org/downloads/).
 
-3. Download PHPMailer from [PHPMailer](https://github.com/PHPMailer/PHPMailer) and place it in the main directory
-
-4. Import the SQL schema to set up your database tables:
+3. Install the required dependencies:
 
 ```
-mysql -u username -p database_name < user_accounts.sql
-```
-
-5. Edit the `config.php` file with your database settings and `activationmail.php` with your PHPMailer settings
-
-6. **(Optional)**: If you want to populate your database with sample data to test the functionality of the login system, import the `randomusers.sql` file:
-
-```
-mysql -u username -p database_name < randomusers.sql
+pip install -r requirements.txt
 ```
 
 ## Usage
 
-To start using the login system, direct your browser to the installation path. Users can register a new account or log in using their existing credentials.
+Run the application directly from the command line. Once launched, enter a search query such as “guitar pedal review” or “python tutorial.”
 
-Refer to individual script comments for more detailed instructions on each feature.
+Choose which result types to include — videos, playlists, or channels — and apply filters such as minimum views, duration, and publish date range.
+
+Click Search to retrieve and display results. Select a result to preview its details and thumbnail.
+
+Use Export CSV to save your results locally.
+
+Double-click or right-click and choose Open in browser to view the video directly on YouTube.
 
 ## Contributing
 
-Contributions to this repository are welcome! If you have an idea for a new tool or an improvement to an existing tool, feel free to create a pull request or open an issue.
+Contributions to this repository are welcome! If you’d like to suggest improvements, optimize API usage, or expand analytics features, feel free to create a pull request or open an issue.
 
 ## License
 
