@@ -21,7 +21,10 @@ from tkinter import ttk, messagebox, filedialog
 
 # ─── THIRD-PARTY LIBRARIES ───────────────────────────────────────────
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from matplotlib.ticker import MaxNLocator
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from PIL import Image, ImageTk
 import requests
 from tkcalendar import DateEntry
@@ -148,6 +151,47 @@ def duration_ok(filter_key: str, seconds: int) -> bool:
         return seconds >= 3 * 60 * 60
     return True
 
+# Check how many days since published date
+def age_days(pub_yyyy_mm_dd: str) -> int:
+    if not pub_yyyy_mm_dd:
+        return 0
+    try:
+        d = datetime.strptime(pub_yyyy_mm_dd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return max((datetime.now(timezone.utc) - d).days, 1)
+    except Exception:
+        return 0
+        
+# Choose readable year ticks
+def _format_year_axis(ax, labels):
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.grid(axis="y", alpha=0.25)
+    
+# Make median lines
+def median(lst):
+    s = sorted(lst)
+    n = len(s)
+    if n == 0: return 0
+    mid = n // 2
+    return (s[mid-1] + s[mid]) / 2 if n % 2 == 0 else s[mid]
+    
+# Simple least-squares line
+def _best_fit_line(xs, ys):
+    n = len(xs)
+    if n < 2:
+        return 0.0, 0.0
+    sx  = sum(xs)
+    sy  = sum(ys)
+    sxx = sum(x*x for x in xs)
+    sxy = sum(x*y for x, y in zip(xs, ys))
+    denom = n*sxx - sx*sx
+    if denom == 0:
+        return 0.0, sum(ys)/n
+    m = (n*sxy - sx*sy) / denom
+    b = (sy - m*sx) / n
+    return m, b
+    
 # ─────────────────────────────
 # MAIN FUNCTIONS
 # ─────────────────────────────
@@ -274,6 +318,16 @@ class YouTubeScoutApp(ttk.Frame):
         self.btn_search.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btns, text="Clear",     command=self.on_clear).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btns, text="Export CSV",command=self.on_export_csv).pack(side=tk.LEFT, padx=(0, 8))
+        
+        self.btn_an_count_year  = ttk.Button(btns, text="Count / Year", command=self.on_chart_counts_per_year)
+        self.btn_an_totals_year = ttk.Button(btns, text="Totals / Year", command=self.on_chart_totals_per_year)
+        self.btn_an_eng_hist    = ttk.Button(btns, text="Engagement Histogram", command=self.on_chart_eng_hist)
+        self.btn_an_views_age   = ttk.Button(btns, text="Views vs Age", command=self.on_chart_views_vs_age)
+        self.btn_kpis = ttk.Button(btns, text="KPIs", command=self.on_show_kpis)
+        self.btn_kpis.pack(side=tk.LEFT, padx=(8, 0))
+
+        for b in (self.btn_an_count_year, self.btn_an_totals_year, self.btn_an_eng_hist, self.btn_an_views_age):
+            b.pack(side=tk.LEFT, padx=(8, 0))
 
     # Center pane: searchable results table with sortable columns
     def _build_results_table(self) -> None:
@@ -282,7 +336,23 @@ class YouTubeScoutApp(ttk.Frame):
         wrapper.rowconfigure(0, weight=1)
         wrapper.columnconfigure(0, weight=1)
 
-        cols = ("title", "channel", "kind", "views", "likes", "comments", "duration", "published", "url")
+        cols = (
+            "title",
+            "channel",
+            "subs",
+            "kind",
+            "duration",
+            "published",
+            "age_days",
+            "views",
+            "vpd",
+            "likes",
+            "comments",
+            "eng_rate",
+            "url",
+            "id",
+        )
+
         self.tree = ttk.Treeview(wrapper, columns=cols, show="headings", selectmode="browse")
         self.tree.grid(row=0, column=0, sticky="nsew")
 
@@ -290,27 +360,37 @@ class YouTubeScoutApp(ttk.Frame):
         headings = {
             "title": "Title",
             "channel": "Channel",
+            "subs": "Subs",
             "kind": "Type",
-            "views": "Views",
-            "likes": "Likes",
-            "comments": "Comments",
             "duration": "Duration",
             "published": "Published",
+            "age_days": "Age (d)",
+            "views": "Views",
+            "vpd": "VPD",
+            "likes": "Likes",
+            "comments": "Comments",
+            "eng_rate": "Eng %",
             "url": "URL / ID",
+            "id": "ID",
         }
         for cid in cols:
             self.tree.heading(cid, text=headings[cid], command=lambda c=cid: self._sort_by(c, False))
 
         # Compact widths: let Title/Channel stretch
-        self.tree.column("title",    anchor="w", width=200, minwidth=200, stretch=False)
-        self.tree.column("channel",  anchor="w", width=150, minwidth=150, stretch=False)
-        self.tree.column("kind",     anchor="center", width=100, minwidth=80,  stretch=False)
-        self.tree.column("views",    anchor="e", width=50, minwidth=50,  stretch=False)
-        self.tree.column("likes",    anchor="e", width=50, minwidth=50,  stretch=False)
-        self.tree.column("comments", anchor="e", width=70, minwidth=70, stretch=False)
-        self.tree.column("duration", anchor="center", width=70, minwidth=70,  stretch=False)
-        self.tree.column("published",anchor="center", width=70, minwidth=70, stretch=False)
-        self.tree.column("url",      anchor="w", width=200, minwidth=200, stretch=False)
+        self.tree.column("title", anchor="w", width=250, minwidth=200, stretch=False)
+        self.tree.column("channel", anchor="w", width=180, minwidth=150, stretch=False)
+        self.tree.column("subs", anchor="e", width=90, minwidth=60, stretch=False)      # new
+        self.tree.column("kind", anchor="center", width=100, minwidth=80, stretch=False)
+        self.tree.column("duration", anchor="center", width=80, minwidth=70, stretch=False)
+        self.tree.column("published", anchor="center", width=100, minwidth=70, stretch=False)
+        self.tree.column("age_days", anchor="e", width=70, stretch=False)
+        self.tree.column("views", anchor="e", width=80, minwidth=70, stretch=False)
+        self.tree.column("vpd", anchor="e", width=90, stretch=False)
+        self.tree.column("likes", anchor="e", width=80, minwidth=70, stretch=False)
+        self.tree.column("comments", anchor="e", width=90, minwidth=80, stretch=False)
+        self.tree.column("eng_rate", anchor="e", width=80, stretch=False)
+        self.tree.column("url", anchor="w", width=220, minwidth=200, stretch=False)
+        self.tree.column("id", width=0, minwidth=0, stretch=False)
 
         # Scrollbars
         vsb = ttk.Scrollbar(wrapper, orient="vertical",   command=self.tree.yview)
@@ -323,6 +403,8 @@ class YouTubeScoutApp(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", self._on_select_row)
         self.tree.bind("<Double-1>",         self._on_open_current)
         self.tree.bind("<Button-3>",         self._on_right_click)
+        
+        self.tree.tag_configure("top10", background="#e8f8e3")
 
 
     # Right panel: thumbnail and details for the selected row
@@ -379,6 +461,9 @@ class YouTubeScoutApp(ttk.Frame):
         if self.entry_query.get().startswith("e.g., "):
             self.entry_query.delete(0, tk.END)
 
+    # Check column names
+    def _col_index(self, name: str) -> int:
+        return list(self.tree["columns"]).index(name)
 
     # Read widgets to typed dataclass we pass through the pipeline
     def _collect_options(self) -> SearchOptions:
@@ -443,6 +528,8 @@ class YouTubeScoutApp(ttk.Frame):
             "type": part_type,
             "maxResults": 50,
             "key": API_KEY,
+            "regionCode": "US",
+            "relevanceLanguage": "en",
         }
 
         # Only sort by viewCount for video searches; use default relevance for others
@@ -527,9 +614,38 @@ class YouTubeScoutApp(ttk.Frame):
                 ).get("url", ""),
                 "title": snip.get("title", ""),
                 "channelTitle": snip.get("channelTitle", ""),
+                "channelId": snip.get("channelId", ""),
             }
 
         return by_id
+    
+    # Batch-fetch subscriber counts for channel IDs
+    def _yt_channels(self, channel_ids: list[str]) -> dict[str, int]:
+        out: dict[str, int] = {}
+        if not channel_ids:
+            return out
+
+        # YouTube API allows up to 50 IDs per call
+        for i in range(0, len(channel_ids), 50):
+            ids_chunk = ",".join(channel_ids[i:i+50])
+            params = {
+                "part": "statistics",
+                "id": ids_chunk,
+                "key": API_KEY,
+                "maxResults": 50,
+            }
+            r = SESSION.get("https://www.googleapis.com/youtube/v3/channels",
+                            params=params, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            data = r.json()
+            for it in data.get("items", []):
+                cid = it.get("id", "")
+                stats = it.get("statistics", {}) or {}
+                # may be hidden; treat as 0
+                subs = int(stats.get("subscriberCount", 0) or 0)
+                if cid:
+                    out[cid] = subs
+        return out
 
     # Entry point when the user clicks Search
     def on_search(self) -> None:
@@ -635,44 +751,87 @@ class YouTubeScoutApp(ttk.Frame):
             details: dict[str, dict] = {}
             for i in range(0, len(video_ids), 50):
                 details.update(self._yt_videos(video_ids[i : i + 50]))
+                
+            chan_ids_from_videos = {meta.get("channelId","") for meta in details.values() if meta.get("channelId")}
+            chan_ids_from_channels = {oid for (k, oid, *_rest) in total_items if k == "channel"}
+            channel_ids = sorted({cid for cid in (chan_ids_from_videos | chan_ids_from_channels) if cid})
+            subs_map = self._yt_channels(channel_ids)
 
             # 4) Apply filters (min views, duration) and build UI rows
             rows = []
             for kind, obj_id, title, channel_title, publishedAt, thumb in total_items:
                 url = ""
                 views_disp = likes_disp = comments_disp = duration_disp = ""
+                eng_rate_disp = age_disp = vpd_disp = ""
+                vpd_numeric = 0.0
+                subs_disp = "—"
+                vid_id_for_row = ""
+
                 pub_date = publishedAt[:10] if publishedAt else ""
 
                 if kind == "video":
                     url = f"https://youtu.be/{obj_id}"
                     meta = details.get(obj_id, {})
-                    views = meta.get("viewCount", 0)
-                    dur_s = meta.get("durationSec", 0)
+                    views_i    = int(meta.get("viewCount", 0) or 0)
+                    likes_i    = int(meta.get("likeCount", 0) or 0)
+                    comments_i = int(meta.get("commentCount", 0) or 0)
+                    dur_s      = int(meta.get("durationSec", 0) or 0)
 
                     # apply UI filters
-                    if opts.min_views_value and views < opts.min_views_value:
+                    if opts.min_views_value and views_i < opts.min_views_value:
                         continue
                     if not duration_ok(opts.duration_value, dur_s):
                         continue
 
                     # display fields
-                    views_disp = f"{views:,}"
-                    likes_disp = f"{meta.get('likeCount', 0):,}"
-                    comments_disp = f"{meta.get('commentCount', 0):,}"
+                    views_disp    = f"{views_i:,}"
+                    likes_disp    = f"{likes_i:,}"
+                    comments_disp = f"{comments_i:,}"
                     duration_disp = seconds_to_hms(dur_s)
+
                     # prefer enriched titles/channel names if present
-                    title = meta.get("title") or title
+                    title         = meta.get("title") or title
                     channel_title = meta.get("channelTitle") or channel_title
+                    
+                    vid_id_for_row = obj_id
+                    chan_id = meta.get("channelId", "")
+                    subs_i = subs_map.get(chan_id, 0)
+                    subs_disp = f"{subs_i:,}" if subs_i else "—"
+
+                    eng = (likes_i + comments_i) / views_i if views_i else 0.0
+                    eng_rate_disp = f"{eng * 100:.1f}%"
+
+                    age_i   = age_days(pub_date)
+                    age_disp = f"{age_i:,}" if age_i else "0"
+
+                    vpd_numeric = (views_i / age_i) if age_i else 0.0
+                    vpd_disp    = f"{vpd_numeric:,.1f}"
 
                 elif kind == "playlist":
                     url = f"https://www.youtube.com/playlist?list={obj_id}"
 
                 elif kind == "channel":
                     url = f"https://www.youtube.com/channel/{obj_id}"
+                    subs_i = subs_map.get(obj_id, 0)
+                    subs_disp = f"{subs_i:,}" if subs_i else "—"
 
-                rows.append(
-                    (title, channel_title, kind, views_disp, likes_disp, comments_disp, duration_disp, pub_date, url, thumb)
-                )
+                values = (
+                    title,          # title
+                    channel_title,  # channel
+                    subs_disp,      # subs
+                    kind,           # kind
+                    duration_disp,  # duration
+                    pub_date,       # published
+                    age_disp,       # age_days
+                    views_disp,     # views
+                    vpd_disp,       # vpd
+                    likes_disp,     # likes
+                    comments_disp,  # comments
+                    eng_rate_disp,  # eng_rate
+                    url,            # url
+                    vid_id_for_row, # id
+                    )
+                rows.append((values, thumb, vpd_numeric))
 
             # 5) hand rows back to the UI thread
             self.master.after(0, lambda: self._apply_search_results(rows, opts, start_ts))
@@ -686,33 +845,44 @@ class YouTubeScoutApp(ttk.Frame):
 
     # Inserts rows into the results table and updates the status bar
     def _apply_search_results(self, rows, opts, start_ts):
-        # Insert rows
-        for (title, channel_title, kind, views, likes, comments, duration, pub, url, thumb) in rows:
-            self.tree.insert(
-                "", tk.END,
-                values=(title, channel_title, kind, views, likes, comments, duration, pub, url),
-                tags=(thumb,)
-            )
+        item_ids = []
+        vpd_values = []
 
-        # Sort by views (desc) if we have any rows
+        for (vals, thumb, vpd_num) in rows:
+            iid = self.tree.insert("", tk.END, values=vals, tags=(thumb,))
+            item_ids.append(iid)
+            vpd_values.append(vpd_num)
+
+        # Sort by views if you like
         if rows:
             self._sort_by('views', True)
 
-        # Compute elapsed
+        # Compute 90th percentile of VPD
+        top_cut = 0.0
+        if vpd_values:
+            sv = sorted(vpd_values)
+            idx = max(0, int(0.9 * (len(sv)-1)))
+            top_cut = sv[idx]
+
+        # Tag rows meeting/exceeding the 90th percentile
+        for iid, (_, _, vpd_num) in zip(item_ids, rows):
+            if vpd_num >= top_cut and vpd_num > 0:
+                # Keep existing tags
+                existing = self.tree.item(iid, "tags")
+                self.tree.item(iid, tags=(*existing, "top10"))
+
+        # Status text
         elapsed = time.time() - start_ts
+        status_text = (
+            f"Query='{opts.query}' | Min views={opts.min_views_label} | Duration={opts.duration_label} | "
+            f"After={opts.published_after or '—'} | Before={opts.published_before or '—'} | "
+            f"Pages={opts.max_pages_per_type} | Rows={len(rows)} | Elapsed: {elapsed:.2f}s"
+            if rows else "No results matched your filters. Try lowering min views or changing duration/date."
+        )
+        self.status.configure(
+            text=status_text + " | Top 10% VPD rows highlighted"
+        )
 
-        # Status message: special text for empty vs normal summary
-        if not rows:
-            status_text = "No results matched your filters. Try lowering min views or changing duration/date."
-        else:
-            status_text = (
-                f"Query='{opts.query}' | Min views={opts.min_views_label} | Duration={opts.duration_label} | "
-                f"After={opts.published_after or '—'} | Before={opts.published_before or '—'} | "
-                f"Pages={opts.max_pages_per_type} | Rows={len(rows)} | Elapsed: {elapsed:.2f}s"
-            )
-        self.status.configure(text=status_text)
-
-        # Stop spinner + re-enable controls
         self.progress.stop()
         self._set_controls_enabled(True)
 
@@ -749,6 +919,24 @@ class YouTubeScoutApp(ttk.Frame):
             w.configure(state=state)
     
     # ─────────────────────────────
+    # CHARTS
+    # ─────────────────────────────
+    
+    def _chart_window(self, title: str):
+        win = tk.Toplevel(self.master)
+        win.title(title)
+        win.geometry("880x560")
+        fig = Figure(figsize=(8, 5), dpi=100)
+        ax = fig.add_subplot(111)
+        canvas = FigureCanvasTkAgg(fig, master=win)
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._center_child(win) 
+        return win, fig, ax, canvas
+
+    def _get_col(self, name: str) -> int:
+        return self._col_index(name)
+
+    # ─────────────────────────────
     # ROW SELECTION / PREVIEW PANEL
     # ─────────────────────────────
     
@@ -756,25 +944,42 @@ class YouTubeScoutApp(ttk.Frame):
     def _on_select_row(self, event=None):
         sel = self._current_values()
         if not sel: return
-        title, channel, kind, views, likes, comments, duration, pub, url = sel
-        
-        # Fill text box with formatted details for the selected item
+        c = self._col_index  # shortcut
+        title     = sel[c("title")]
+        channel   = sel[c("channel")]
+        subs      = sel[c("subs")]
+        kind      = sel[c("kind")]
+        views     = sel[c("views")]
+        likes     = sel[c("likes")]
+        comments  = sel[c("comments")]
+        engp      = sel[c("eng_rate")]
+        aged      = sel[c("age_days")]
+        vpd       = sel[c("vpd")]
+        duration  = sel[c("duration")]
+        pub       = sel[c("published")]
+        url       = sel[c("url")]
+        vid_id    = sel[c("id")]
+
         self.detail_text.configure(state="normal")
         self.detail_text.delete("1.0", tk.END)
         self.detail_text.insert("1.0",
             f"Title: {title}\n"
             f"Channel: {channel}\n"
+            f"Subs: {subs}\n"
             f"Type: {kind}\n"
             f"Views: {views}\n"
             f"Likes: {likes}\n"
             f"Comments: {comments}\n"
+            f"Engagement: {engp}\n"
+            f"Age (days): {aged}\n"
+            f"Views/Day: {vpd}\n"
             f"Duration: {duration}\n"
             f"Published: {pub}\n"
-            f"URL: {url}"
+            f"URL: {url}\n"
+            f"ID: {vid_id}"
         )
         self.detail_text.configure(state="disabled")
 
-        # Load thumbnail for the selected video (if available)
         item = self.tree.focus()
         tags = self.tree.item(item, 'tags') if item else []
         thumb_url = tags[0] if tags else None
@@ -821,14 +1026,16 @@ class YouTubeScoutApp(ttk.Frame):
     def _on_open_current(self, event=None):
         sel = self._current_values()
         if not sel: return
-        url = sel[8]
+        url_idx = self._col_index("url")
+        url = sel[url_idx]
         if url: webbrowser.open(url)
 
     # Copies the selected item’s URL to clipboard
     def _on_copy_url(self, event=None):
         sel = self._current_values()
         if not sel: return
-        url = sel[8]
+        url_idx = self._col_index("url")
+        url = sel[url_idx]
         self.clipboard_clear(); self.clipboard_append(url)
         self.status.configure(text="Copied URL to clipboard")
         
@@ -878,7 +1085,22 @@ class YouTubeScoutApp(ttk.Frame):
             return
         
         # Column headers must match the values order above
-        headers = ("Title", "Channel", "Type", "Views", "Likes", "Comments", "Duration", "Published", "URL")
+        headers = (
+            "Title",
+            "Channel",
+            "Subs",
+            "Type",
+            "Duration",
+            "Published",
+            "Age (d)",
+            "Views",
+            "VPD",
+            "Likes",
+            "Comments",
+            "Eng %",
+            "URL",
+            "ID"
+        )
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f); writer.writerow(headers); writer.writerows(rows)
@@ -886,6 +1108,258 @@ class YouTubeScoutApp(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Export failed", f"Could not write CSV: {e}")
             
+    # Create publish date counts chart
+    def on_chart_counts_per_year(self):
+        col_kind = self._get_col("kind")
+        col_pub  = self._get_col("published")
+        counts = {}
+        for iid in self.tree.get_children(""):
+            vals = self.tree.item(iid, "values")
+            if vals[col_kind] != "video":
+                continue
+            pub = vals[col_pub]
+            if not pub:
+                continue
+            year = pub[:4]
+            if len(year) == 4 and year.isdigit():
+                counts[year] = counts.get(year, 0) + 1
+
+        if not counts:
+            messagebox.showinfo("Counts / Year", "No video rows to plot.")
+            return
+
+        years = sorted(counts.keys())
+        ys = [counts[y] for y in years]
+
+        win, fig, ax, canvas = self._chart_window("Counts / Year")
+        ax.bar(range(len(years)), ys)
+        ax.set_ylabel("Video count")
+        ax.set_xlabel("Year")
+        ax.set_title("Videos per Year")
+        _format_year_axis(ax, years)
+        fig.tight_layout(); canvas.draw()
+
+    # Create views (in hundreds), likes, comments chart
+    def on_chart_totals_per_year(self):
+        col_kind  = self._get_col("kind")
+        col_pub   = self._get_col("published")
+        col_views = self._get_col("views")
+        col_likes = self._get_col("likes")
+        col_comms = self._get_col("comments")
+
+        agg = {}
+        def i(s):
+            try: return int((s or "0").replace(",", ""))
+            except: return 0
+
+        for iid in self.tree.get_children(""):
+            v = self.tree.item(iid, "values")
+            if v[col_kind] != "video":
+                continue
+            pub = v[col_pub]
+            if not pub:
+                continue
+            year = pub[:4]
+            if len(year) != 4 or not year.isdigit():
+                continue
+            e = agg.setdefault(year, {"views":0, "likes":0, "comments":0})
+            e["views"]    += i(v[col_views])
+            e["likes"]    += i(v[col_likes])
+            e["comments"] += i(v[col_comms])
+
+        if not agg:
+            messagebox.showinfo("Totals / Year", "No video rows to plot.")
+            return
+
+        years = sorted(agg.keys())
+        V = [agg[y]["views"] / 100.0 for y in years]   # scale views so bars are comparable
+        L = [agg[y]["likes"] for y in years]
+        C = [agg[y]["comments"] for y in years]
+
+        win, fig, ax, canvas = self._chart_window("Totals per Year")
+
+        x = list(range(len(years)))
+        width = 0.26
+        ax.bar([xi - width for xi in x], V, width=width, label="Views (×100)")
+        ax.bar(x,                    L,  width=width, label="Likes")
+        ax.bar([xi + width for xi in x], C, width=width, label="Comments")
+
+        ax.set_ylabel("Counts (views scaled ×100)")
+        ax.set_xlabel("Year")
+        ax.set_title("Totals per Year")
+        _format_year_axis(ax, years)
+        ax.legend(loc="upper left")
+        fig.tight_layout(); canvas.draw()
+
+    # Create engagement rates chart
+    def on_chart_eng_hist(self):
+        col_kind = self._get_col("kind")
+        col_eng  = self._get_col("eng_rate")
+        vals = []
+        for iid in self.tree.get_children(""):
+            v = self.tree.item(iid, "values")
+            if v[col_kind] != "video":
+                continue
+            try:
+                x = float((v[col_eng] or "0").replace("%","").replace(",",""))
+                vals.append(x)
+            except:
+                pass
+
+        if not vals:
+            messagebox.showinfo("Engagement Histogram", "No engagement data.")
+            return
+
+        win, fig, ax, canvas = self._chart_window("Engagement-rate Histogram")
+        ax.hist(vals, bins=30)
+        ax.set_xlabel("Engagement %")
+        ax.set_ylabel("Frequency")
+        ax.set_title("Engagement-rate Histogram")
+        fig.tight_layout(); canvas.draw()
+
+    # Create views over age chart
+    def on_chart_views_vs_age(self):
+        col_kind  = self._get_col("kind")
+        col_views = self._get_col("views")
+        col_age   = self._get_col("age_days")
+
+        X_age, Y_views = [], []
+        for iid in self.tree.get_children(""):
+            v = self.tree.item(iid, "values")
+            if v[col_kind] != "video": 
+                continue
+            try:
+                age   = int((v[col_age] or "0").replace(",",""))
+                views = int((v[col_views] or "0").replace(",",""))
+                if age > 0 and views >= 0:
+                    X_age.append(age)
+                    Y_views.append(views)
+            except:
+                pass
+
+        if not X_age:
+            messagebox.showinfo("Views vs Age", "No video rows with age/views.")
+            return
+
+        win, fig, ax, canvas = self._chart_window("Views vs Age")
+        ax.scatter(X_age, Y_views, s=18)
+
+        # Best-fit line (least squares)
+        m, b = _best_fit_line(X_age, Y_views)
+        xs = [min(X_age), max(X_age)]
+        ys = [m*xs[0] + b, m*xs[1] + b]
+        ax.plot(xs, ys)
+
+        ax.set_xlabel("Age (days)")
+        ax.set_ylabel("Views")
+        ax.set_title("Views vs Age")
+        ax.grid(alpha=0.25)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=8, integer=True))
+        fig.tight_layout(); canvas.draw()
+        
+    # Create KPI chart
+    def on_show_kpis(self):
+        c = self._get_col
+        k_kind    = c("kind")
+        k_views   = c("views")
+        k_likes   = c("likes")
+        k_comms   = c("comments")
+        k_eng     = c("eng_rate")
+        k_vpd     = c("vpd")
+        k_subs    = c("subs")
+
+        n_videos = n_playlists = n_channels = 0
+        total_views = total_likes = total_comments = 0
+        total_vpd = 0.0
+        eng_vals = []
+        subs_vals = []
+
+        def i(s):
+            try: return int((s or "0").replace(",", ""))
+            except: return 0
+        def f(s):
+            try: return float((s or "0").replace(",", "").replace("%",""))
+            except: return 0.0
+
+        for iid in self.tree.get_children(""):
+            v = self.tree.item(iid, "values")
+            kind = v[k_kind]
+            if kind == "video":
+                n_videos += 1
+                total_views    += i(v[k_views])
+                total_likes    += i(v[k_likes])
+                total_comments += i(v[k_comms])
+                total_vpd      += f(v[k_vpd])
+                eng_vals.append(f(v[k_eng]))
+            elif kind == "playlist":
+                n_playlists += 1
+            elif kind == "channel":
+                n_channels += 1
+
+            s = v[k_subs]
+            if s and s != "—":
+                subs_vals.append(i(s))
+
+        def sd(a,b): return (a / b) if b else 0
+        avg_views     = sd(total_views, n_videos)
+        avg_likes     = sd(total_likes, n_videos)
+        avg_comments  = sd(total_comments, n_videos)
+        avg_vpd       = sd(total_vpd, n_videos)
+        avg_eng_pct   = median(eng_vals) if eng_vals else 0.0
+        total_subs    = sum(subs_vals)
+        avg_subs      = sd(total_subs, len(subs_vals))
+
+        win = tk.Toplevel(self.master)
+        win.title("KPIs")
+        win.geometry("520x520")
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        # make the two columns expand equally so the dialog feels centered
+        frm.grid_columnconfigure(0, weight=1)
+        frm.grid_columnconfigure(1, weight=1)
+
+        rows = [
+            ("Counts", ""),
+            ("Total videos", f"{n_videos:,}"),
+            ("Total playlists", f"{n_playlists:,}"),
+            ("Total channels", f"{n_channels:,}"),
+            ("", ""),
+            ("Totals", ""),
+            ("Total views", f"{total_views:,}"),
+            ("Total likes", f"{total_likes:,}"),
+            ("Total comments", f"{total_comments:,}"),
+            ("Total subscribers (seen)", f"{total_subs:,}"),
+            ("", ""),
+            ("Averages (videos only)", ""),
+            ("Avg views per video", f"{avg_views:,.1f}"),
+            ("Avg likes per video", f"{avg_likes:,.1f}"),
+            ("Avg comments per video", f"{avg_comments:,.1f}"),
+            ("Avg views/day (VPD)", f"{avg_vpd:,.2f}"),
+            ("Median engagement %", f"{avg_eng_pct:.2f}%"),
+            ("Avg subscribers (seen)", f"{avg_subs:,.1f}"),
+        ]
+
+        r = 0
+        for label, value in rows:
+            if label == "" and value == "":
+                ttk.Separator(frm, orient="horizontal").grid(row=r, column=0, columnspan=2, sticky="ew", pady=6)
+            elif value == "":
+                # section header centered across both columns
+                ttk.Label(frm, text=label, style="Header.TLabel", anchor="center")\
+                    .grid(row=r, column=0, columnspan=2, sticky="ew", pady=(8,4))
+            else:
+                # label left, value right for easy scanning
+                ttk.Label(frm, text=label, anchor="w").grid(row=r, column=0, sticky="w", padx=(0,16))
+                ttk.Label(frm, text=value, anchor="e").grid(row=r, column=1, sticky="e")
+            r += 1
+
+        ttk.Button(frm, text="Close", command=win.destroy).grid(row=r, column=0, columnspan=2, pady=(12,0))
+
+        # center the KPI window
+        self._center_child(win)
+
     # Sort the Treeview by the given column
     def _sort_by(self, col: str, descending: bool):
         data = [(self.tree.set(k, col), k) for k in self.tree.get_children('')]
@@ -893,9 +1367,17 @@ class YouTubeScoutApp(ttk.Frame):
         # Convert display strings to comparable keys per column type
         def to_key(val: str):
             # Numeric columns stored as strings with commas - normalize to int
-            if col in ('views', 'likes', 'comments'):
+            if col in ('views', 'likes', 'comments', 'age_days', 'subs'):
                 try: return int((val or "0").replace(',', ''))
                 except: return 0
+            # Numeric columns stored as strings with commas - normalize to float
+            if col == 'vpd':
+                try: return float((val or "0").replace(',', ''))
+                except: return 0.0
+            # Numeric columns stored as strings with percents - normalize to float
+            if col == 'eng_rate':
+                try: return float((val or "0").replace('%', '').replace(',', ''))
+                except: return 0.0
             # Date column stored as 'YYYY-MM-DD' - convert to datetime for correct ordering
             if col == 'published':
                 d = parse_iso_date(val); return d or datetime.min
@@ -924,6 +1406,14 @@ class YouTubeScoutApp(ttk.Frame):
         sw = self.master.winfo_screenwidth(); sh = self.master.winfo_screenheight()
         x = (sw // 2) - (w // 2); y = (sh // 2) - (h // 2)
         self.master.geometry(f"{w}x{h}+{x}+{y}")
+        
+    # Center the chart on the current screen after initial layout
+    def _center_child(self, win: tk.Toplevel):
+        win.update_idletasks()
+        w = win.winfo_width(); h = win.winfo_height()
+        sw = win.winfo_screenwidth(); sh = win.winfo_screenheight()
+        x = (sw // 2) - (w // 2); y = (sh // 2) - (h // 2)
+        win.geometry(f"+{x}+{y}")
         
 # ─────────────────────────────
 # MAIN FUNCTIONS
